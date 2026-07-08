@@ -7,7 +7,7 @@ import time
 import cv2
 
 CAM_INDEX = 0            # change to 1/2 if your webcam isn't the default
-WIDTH, HEIGHT = 640, 480 # keep modest — we'll blur every frame later
+WIDTH, HEIGHT = 840, 680 # keep modest — we'll blur every frame later
 
 
 def main():
