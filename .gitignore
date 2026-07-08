@@ -1,0 +1,15 @@
+# python
+__pycache__/
+*.pyc
+# virtual envs
+venv/
+.venv/
+env/
+# secrets / local
+.env
+# big media (keep small gifs, ignore raw recordings)
+media/*.mp4
+media/*.mov
+# os junk
+.DS_Store
+Thumbs.db
