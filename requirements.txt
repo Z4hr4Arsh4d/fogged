@@ -1,6 +1,5 @@
 # Fogged — Python dependencies
-opencv-python      # M0+  webcam capture, image blending, blur, display
-numpy              # M1+  the fog-mask math
-# added at later milestones (uncomment when you reach them):
-# mediapipe        # M2   real-time hand / fingertip tracking
-# sounddevice      # M3   microphone → breath detection
+opencv-python      # webcam capture, blur, compositing, display
+numpy              # the fog-mask math
+mediapipe          # real-time hand / fingertip tracking  (M2)
+# sounddevice      # microphone -> breath detection        (M3, uncomment then)
