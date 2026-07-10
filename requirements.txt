@@ -1,5 +1,5 @@
 # Fogged — Python dependencies
-opencv-python      # webcam capture, blur, compositing, display
-numpy              # the fog-mask math
-mediapipe          # real-time hand / fingertip tracking  (M2)
-# sounddevice      # microphone -> breath detection        (M3, uncomment then)
+opencv-python==4.10.0.84   # webcam, blur, compositing, display (5.x has broken GUI on Windows)
+numpy                      # the fog-mask math
+mediapipe==0.10.14         # hand tracking. NEWER VERSIONS REMOVED the legacy `solutions` API — pin this.
+sounddevice                # microphone -> breath detection

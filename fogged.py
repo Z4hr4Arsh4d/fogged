@@ -36,7 +36,18 @@ except Exception as e:
 
 # ---------------------------------------------------------------- config
 CAM_INDEX = 0                 # try 1 or 2 if the webcam doesn't open
-WIDTH, HEIGHT = 640, 480      # we blur every frame — resolution is our perf budget
+WIDTH, HEIGHT = 1280, 720     # camera capture size (720p)
+DISPLAY_SCALE = 1.0           # 1.0 = show at capture size; raise for a bigger window
+FULLSCREEN = False            # press ENTER at any time to toggle fullscreen
+
+# --- intro ---
+INTRO_SECONDS = 4.2           # length of the cinematic glass-text intro
+INTRO_TITLE   = "FOGGED"
+
+# --- breath (M3) ---
+BREATH_RMS_MIN   = 0.012      # loudness gate  (lower = more sensitive)
+BREATH_LOW_RATIO = 0.55       # share of energy in 50-500Hz that counts as "breath-like"
+BREATH_ATTACK    = 3.0        # how fast detected breath ramps the fog up
 
 BLUR_KERNEL   = 31            # frosted-glass softness (must be odd)
 BLUR_SCALE    = 0.25          # blur a small copy, then upscale (big speedup)
@@ -50,6 +61,56 @@ PALM_FADE     = 3.5           # how fast an open palm clears the glass
 
 FINGERTIPS = (8, 12, 16, 20)  # index, middle, ring, pinky tips
 PIPS       = (6, 10, 14, 18)  # the joint below each of those
+
+
+# ---------------------------------------------------------------- breath (audio)
+class BreathDetector:
+    """Approximates an exhale: sustained, low-frequency, broadband audio energy.
+
+    Honest caveat: a microphone cannot truly distinguish a breath from other low noise.
+    We detect *sustained low-frequency energy*, which feels like magic but is not a
+    respiration sensor.
+    """
+
+    def __init__(self, samplerate: int = 16000, block: int = 1024):
+        self.level = 0.0          # smoothed 0..1 "how much breath right now"
+        self.ok = False
+        self._sr, self._block = samplerate, block
+        self._stream = None
+
+    def start(self) -> bool:
+        try:
+            import sounddevice as sd
+        except Exception as e:
+            print(f"[audio] sounddevice unavailable ({e}) — press F to fog instead.", flush=True)
+            return False
+        try:
+            self._stream = sd.InputStream(channels=1, samplerate=self._sr,
+                                          blocksize=self._block, callback=self._cb)
+            self._stream.start()
+            self.ok = True
+            print("[audio] microphone open — blow on the mic to fog the glass", flush=True)
+        except Exception as e:
+            print(f"[audio] could not open microphone ({e}) — press F to fog instead.", flush=True)
+        return self.ok
+
+    def _cb(self, indata, frames, time_info, status):
+        x = indata[:, 0].astype(np.float32)
+        rms = float(np.sqrt(np.mean(x * x)) + 1e-9)
+        if rms < BREATH_RMS_MIN:
+            self.level *= 0.85                       # decay toward silence
+            return
+        spec = np.abs(np.fft.rfft(x * np.hanning(len(x))))
+        freqs = np.fft.rfftfreq(len(x), 1.0 / self._sr)
+        low = spec[(freqs > 50) & (freqs < 500)].sum()
+        total = spec.sum() + 1e-9
+        ratio = float(low / total)                   # breath is low-frequency & broadband
+        target = 1.0 if ratio > BREATH_LOW_RATIO else 0.0
+        self.level += (target - self.level) * 0.35   # smooth so it does not flicker
+
+    def stop(self):
+        if self._stream is not None:
+            self._stream.stop(); self._stream.close()
 
 
 # ---------------------------------------------------------------- fog mask
@@ -123,6 +184,44 @@ def is_pointing(lm) -> bool:
     return finger_extended(lm, 8, 6) and not finger_extended(lm, 12, 10)
 
 
+# ---------------------------------------------------------------- intro
+def draw_intro(frame, t: float):
+    """Glass-engraved title that condenses in, glows, then fades back into the fog."""
+    h, w = frame.shape[:2]
+    p = np.clip(t / INTRO_SECONDS, 0.0, 1.0)
+
+    # the whole screen starts fully fogged and stays fogged through the intro
+    base = composite(frame, frosted(frame), np.ones((h, w), np.float32))
+    base = (base.astype(np.float32) * 0.55).astype(np.uint8)          # dim it, cinematic
+
+    # title fades in (0 -> .45), holds, fades out (.75 -> 1)
+    if p < 0.45:   a = p / 0.45
+    elif p < 0.75: a = 1.0
+    else:          a = max(0.0, 1.0 - (p - 0.75) / 0.25)
+
+    scale = w / 380.0
+    thick = max(2, int(scale * 2))
+    (tw, th), _ = cv2.getTextSize(INTRO_TITLE, cv2.FONT_HERSHEY_DUPLEX, scale, thick)
+    x, y = (w - tw) // 2, (h + th) // 2
+
+    layer = np.zeros_like(base)
+    # engraved look: dark offset shadow + bright face + soft outer glow
+    cv2.putText(layer, INTRO_TITLE, (x + 2, y + 2), cv2.FONT_HERSHEY_DUPLEX, scale, (25, 30, 35), thick + 2, cv2.LINE_AA)
+    cv2.putText(layer, INTRO_TITLE, (x, y),         cv2.FONT_HERSHEY_DUPLEX, scale, (235, 245, 250), thick, cv2.LINE_AA)
+    glow = cv2.GaussianBlur(layer, (0, 0), 9)
+    out = cv2.addWeighted(base, 1.0, glow, 0.55 * a, 0)
+    out = cv2.addWeighted(out, 1.0, layer, a, 0)
+
+    if p > 0.5:
+        sub = "breathe on the glass"
+        sa = min(1.0, (p - 0.5) / 0.3) * a
+        ss = scale * 0.28
+        (sw, _), _ = cv2.getTextSize(sub, cv2.FONT_HERSHEY_SIMPLEX, ss, 1)
+        cv2.putText(out, sub, ((w - sw) // 2, y + int(th * 1.1)),
+                    cv2.FONT_HERSHEY_SIMPLEX, ss, (200, 220, 230), 1, cv2.LINE_AA)
+    return out
+
+
 # ---------------------------------------------------------------- camera
 def open_camera(index: int):
     """Open the webcam, trying the Windows-friendly DirectShow backend first.
@@ -172,6 +271,15 @@ def main() -> None:
         print("mediapipe not installed — running M1 only (no hand tracking).")
         print("   pip install mediapipe")
 
+    breath = BreathDetector()
+    breath.start()
+
+    cv2.namedWindow("Fogged", cv2.WINDOW_NORMAL)
+    cv2.resizeWindow("Fogged", int(WIDTH * DISPLAY_SCALE), int(HEIGHT * DISPLAY_SCALE))
+    if FULLSCREEN:
+        cv2.setWindowProperty("Fogged", cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
+
+    intro_start = time.time()
     mask = np.ones((HEIGHT, WIDTH), np.float32)   # start fully fogged
     brush_radius = BRUSH_RADIUS
     brush = make_brush(brush_radius, BRUSH_FEATHER)
@@ -183,7 +291,8 @@ def main() -> None:
 
     print("[5] entering main loop — the window should appear now", flush=True)
     print(f"    hand tracking: {'ON' if hands is not None else 'OFF (fog + keyboard only)'}", flush=True)
-    print("Fogged — M2.  F fog | C clear | [ ] brush | D debug | Q quit", flush=True)
+    print("Fogged — M3.  BLOW on the mic to fog | point index finger to write | open palm to wipe", flush=True)
+    print("              F fog (fallback) | C clear | [ ] brush | ENTER fullscreen | R replay intro | Q quit", flush=True)
 
     frame_no = 0
     while True:
@@ -202,9 +311,19 @@ def main() -> None:
         if dt > 0:
             fps = 0.9 * fps + 0.1 / dt
 
-        # --- fog builds while "breathing" (keyboard stand-in until M3) ---
-        if fogging:
-            mask += FOG_IN_RATE * dt
+        # --- INTRO: play the cinematic title, then hand over to the live glass ---
+        elapsed = time.time() - intro_start
+        if elapsed < INTRO_SECONDS:
+            cv2.imshow("Fogged", draw_intro(frame, elapsed))
+            if (cv2.waitKey(1) & 0xFF) in (ord('q'), 27):
+                break
+            continue
+
+        # --- fog builds from your BREATH (or F as a fallback) ---
+        blow = breath.level if breath.ok else 0.0
+        if fogging or blow > 0.15:
+            rate = FOG_IN_RATE if fogging else BREATH_ATTACK * blow
+            mask += rate * dt
             np.clip(mask, 0.0, 1.0, out=mask)
 
         # --- hands: point to write, open palm to clear ---
@@ -240,7 +359,9 @@ def main() -> None:
             out = cv2.cvtColor((mask * 255).astype(np.uint8), cv2.COLOR_GRAY2BGR)
 
         cv2.putText(out, f"{fps:4.1f} FPS", (10, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2, cv2.LINE_AA)
-        hud = f"[F]og {'ON' if fogging else 'off'}  brush {brush_radius}  {status}"
+        bl = int((breath.level if breath.ok else 0.0) * 20)
+        meter = "#" * bl + "-" * (20 - bl)
+        hud = f"breath [{meter}]  brush {brush_radius}  {status}"
         cv2.putText(out, hud, (10, h - 14), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (240, 240, 240), 1, cv2.LINE_AA)
         cv2.imshow("Fogged", out)
         frame_no += 1
@@ -266,11 +387,18 @@ def main() -> None:
             mask[:] = 0.0
         elif k == ord('d'):
             debug = not debug
+        elif k == 13:                                    # ENTER -> toggle fullscreen
+            full = cv2.getWindowProperty("Fogged", cv2.WND_PROP_FULLSCREEN) == cv2.WINDOW_FULLSCREEN
+            cv2.setWindowProperty("Fogged", cv2.WND_PROP_FULLSCREEN,
+                                  cv2.WINDOW_NORMAL if full else cv2.WINDOW_FULLSCREEN)
+        elif k == ord('r'):                              # replay the intro
+            intro_start = time.time()
         elif k in (ord(']'), ord('=')):
             brush_radius = min(90, brush_radius + 4); brush = make_brush(brush_radius, BRUSH_FEATHER)
         elif k in (ord('['), ord('-')):
             brush_radius = max(6, brush_radius - 4); brush = make_brush(brush_radius, BRUSH_FEATHER)
 
+    breath.stop()
     cap.release()
     if hands is not None:
         hands.close()
