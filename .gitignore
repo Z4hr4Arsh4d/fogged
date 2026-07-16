@@ -13,3 +13,7 @@ media/*.mov
 # os junk
 .DS_Store
 Thumbs.db
+# screenshots saved by the OK-sign gesture (keep the folder, not the shots)
+media/*.png
+!media/.gitkeep
+crash.log
