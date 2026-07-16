@@ -9,10 +9,6 @@ condensation beads up and trickles down, and your writing slowly fogs back over 
 > **Complete — M0 through M8**, plus a realism pass (patchy condensation, refraction, shaded
 > droplet sprites) and a live settings panel.
 
-## Demo
-
-*(drop your demo GIF or a link in `media/` and reference it here)*
-
 ## How it works
 
 Everything runs on **two float fields** the size of the video:
